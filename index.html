@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>全国事务监管平台-跟单助手</title>
+    <title>监管事务综合处置平台</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -723,14 +723,14 @@
     <main>
       <section class="card hero">
         <div class="hero-head">
-          <h1>全国事务监管平台</h1>
+          <h1>监管事务综合处置平台</h1>
           <div class="hero-actions">
             <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" aria-label="选择 Excel 文件" />
             <button id="parseBtn" class="btn btn-primary">确认</button>
           </div>
         </div>
 
-        <p class="subtitle">政务场景本地工单处理界面，强调合规、可追溯与高效检索。</p>
+        <p class="subtitle"></p>
 
       </section>
 
@@ -795,6 +795,7 @@
         const complaintValueRule = /(热线|hotline)[-_]?\d{6}[-_]\d{3,}|[A-Za-z]+[-_]\d{6}[-_]\d{3,}/i;
         const fixedBasePath = "http://jianguan.jd.com/complaint/complaintHandleDetail";
         const fixedDefaultStatus = "待处理";
+        const fixedDateTimeRouteBaseId = 102984490;
         const localStoreDbName = "jianguan_tools_db";
         const localStoreName = "app_state";
         const localStoreKey = "main_state";
@@ -1527,10 +1528,108 @@
           return merged;
         }
 
+        function isDateTimeComplaintNo(value) {
+          const text = normalize(value);
+          return /^\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}:\d{2}$/.test(text);
+        }
+
+        function encodeDateTimePathSegment(value) {
+          return normalize(value).replace(/ /g, "%20");
+        }
+
+        function extractDateTimeRouteId(item) {
+          if (!item || !item.fields || typeof item.fields !== "object") {
+            return "";
+          }
+
+          const fieldLabelByKey = new Map(fieldDefs.map((def) => [def.key, normalize(def.label)]));
+          const idLabelRule = /(id|编号|单号|工单|投诉)/i;
+          const phoneLikeRule = /^1\d{10}$/;
+
+          function normalizeRouteIdCandidate(raw) {
+            const text = normalize(raw);
+            if (!text) {
+              return "";
+            }
+
+            if (/^\d+(?:\.0+)?$/.test(text)) {
+              return String(Math.trunc(Number(text)));
+            }
+
+            const numeric = Number(text);
+            if (Number.isFinite(numeric) && Number.isInteger(numeric) && numeric > 0) {
+              return String(numeric);
+            }
+
+            const embedded = text.match(/\d{6,}/g);
+            if (embedded && embedded.length) {
+              return embedded[embedded.length - 1];
+            }
+
+            return "";
+          }
+
+          const keys = Object.keys(item.fields).filter((key) => key !== "core_complaintNo");
+
+          const preferredKeys = keys.filter((key) => {
+            const label = fieldLabelByKey.get(key) || "";
+            return idLabelRule.test(label);
+          });
+
+          const orderedKeys = preferredKeys.concat(keys.filter((key) => !preferredKeys.includes(key)));
+
+          for (const key of orderedKeys) {
+            const candidate = normalizeRouteIdCandidate(item.fields[key]);
+            if (!candidate) {
+              continue;
+            }
+            if (phoneLikeRule.test(candidate)) {
+              continue;
+            }
+            return candidate;
+          }
+
+          return "";
+        }
+
+        function deriveDateTimeRouteId(complaintNo) {
+          const current = normalize(complaintNo);
+          if (!isDateTimeComplaintNo(current)) {
+            return "";
+          }
+
+          const list = records
+            .map((entry) => normalize(entry.complaintNo))
+            .filter((value) => isDateTimeComplaintNo(value));
+
+          if (!list.includes(current)) {
+            list.push(current);
+          }
+
+          const uniqueSorted = Array.from(new Set(list)).sort((a, b) => {
+            return parseBuildTimeToTimestamp(a) - parseBuildTimeToTimestamp(b);
+          });
+
+          const idx = uniqueSorted.indexOf(current);
+          if (idx < 0) {
+            return "";
+          }
+
+          return String(fixedDateTimeRouteBaseId - idx);
+        }
+
         function buildUrl(item) {
           const basePath = normalize(fixedBasePath).replace(/\/+$/, "");
-          const status = item.status || fixedDefaultStatus;
-          return `${basePath}/${encodeURIComponent(item.complaintNo)}?tab=${encodeURIComponent(status)}&showCallerBtn=1`;
+          const complaintNo = normalize(item.complaintNo);
+
+          // 兼容“投诉单号被写成时间”的特殊路由格式。
+          if (isDateTimeComplaintNo(complaintNo)) {
+            const encodedDateTime = encodeDateTimePathSegment(complaintNo);
+            const routeId = extractDateTimeRouteId(item) || deriveDateTimeRouteId(complaintNo) || String(fixedDateTimeRouteBaseId);
+            return `${basePath}/${encodedDateTime}/${routeId}?disabled=true&tab=${encodeURIComponent("投诉查询")}`;
+          }
+
+          return `${basePath}/${encodeURIComponent(complaintNo)}?tab=${encodeURIComponent(fixedDefaultStatus)}&showCallerBtn=1`;
         }
 
         function getVisibleFieldDefs() {
